@@ -2,6 +2,7 @@ import functools
 import gymnasium as gym
 from gymnasium.wrappers import RecordVideo
 import numpy as np
+import cv2
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -254,7 +255,12 @@ class AlternatingLegsRewardWrapper(gym.Wrapper):
 
 def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, device="cpu", render=False, learning_rate=3e-4, updates_per_step=1, start_steps=10000, num_envs=1, alternating_legs_scale=5.0):
     # Determine render mode
-    render_mode = "human" if render else None
+    # We use rgb_array for manual rendering with OpenCV to support multiple windows
+    render_mode = "rgb_array" if render else None
+    
+    # Track per-environment progress
+    env_step_counts = np.zeros(num_envs, dtype=int)
+    env_episode_counts = np.zeros(num_envs, dtype=int)
     
     # Create environment
     if num_envs > 1:
@@ -334,6 +340,60 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
             # Take step
             next_state, reward, done, truncated, info = env.step(action)
             
+            # Update step counts and handle rendering
+            if render:
+                frames = env.render()
+                # If frames is a tuple (vec env), iterate. If single (list/array), handle accordingly.
+                # make_vec with rgb_array usually returns a tuple of frames.
+                
+                # Update counters
+                for i in range(num_envs):
+                    if num_envs > 1:
+                        is_done = done[i] or truncated[i]
+                    else:
+                        is_done = done or truncated
+                    
+                    if is_done:
+                        env_episode_counts[i] += 1
+                        env_step_counts[i] = 0
+                    else:
+                        env_step_counts[i] += 1
+                        
+                # Display frames
+                if isinstance(frames, (tuple, list)) and len(frames) == num_envs:
+                    for i, frame in enumerate(frames):
+                        # Convert RGB to BGR for OpenCV
+                        if isinstance(frame, np.ndarray):
+                            bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                            
+                            # Add text overlay
+                            text_info = [
+                                f"Unit: {i}",
+                                f"Ep: {env_episode_counts[i]}",
+                                f"Step: {env_step_counts[i]}"
+                            ]
+                            
+                            for j, line in enumerate(text_info):
+                                cv2.putText(bgr_frame, line, (10, 30 + j*25), 
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                            
+                            cv2.imshow(f"Unit {i}", bgr_frame)
+                    
+                    cv2.waitKey(1)
+                elif isinstance(frames, np.ndarray) and num_envs == 1:
+                     # Handle single env case if it returns single frame array
+                     bgr_frame = cv2.cvtColor(frames, cv2.COLOR_RGB2BGR)
+                     text_info = [
+                        f"Unit: 0",
+                        f"Ep: {env_episode_counts[0]}",
+                        f"Step: {env_step_counts[0]}"
+                     ]
+                     for j, line in enumerate(text_info):
+                        cv2.putText(bgr_frame, line, (10, 30 + j*25), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                     cv2.imshow("Unit 0", bgr_frame)
+                     cv2.waitKey(1)
+
             # Handle done/truncated for buffer
             if num_envs > 1:
                 done_flag = done | truncated
@@ -418,6 +478,9 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
                      'learning_rate': learning_rate
                  }, f"logs/bipedal_walker_checkpoint_ep{current_episode}.pth")
 
+    if render:
+        cv2.destroyAllWindows()
+        
     env.close()
     return episode_rewards, agent
 
