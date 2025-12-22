@@ -253,19 +253,22 @@ class AlternatingLegsRewardWrapper(gym.Wrapper):
         return state, reward, done, truncated, info
 
 def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, device="cpu", render=False, learning_rate=3e-4, updates_per_step=1, start_steps=10000, num_envs=1, alternating_legs_scale=5.0):
+    # Determine render mode
+    render_mode = "human" if render else None
+    
     # Create environment
     if num_envs > 1:
         # Vectorized environment for faster data collection
         # Use functools.partial to pass arguments to the wrapper class
         wrapper_cls = functools.partial(AlternatingLegsRewardWrapper, scale=alternating_legs_scale)
-        env = gym.make_vec(env_name, num_envs=num_envs, vectorization_mode="async", wrappers=[wrapper_cls])
-        print(f"Using {num_envs} vectorized environments with AlternatingLegsRewardWrapper (scale={alternating_legs_scale})")
-    elif render:
-        env = gym.make(env_name, render_mode="human")
-        env = AlternatingLegsRewardWrapper(env, scale=alternating_legs_scale)
-        print(f"Using AlternatingLegsRewardWrapper with scale={alternating_legs_scale}")
+        
+        # Use sync vectorization if rendering to avoid issues with subprocesses and windows
+        vec_mode = "sync" if render else "async"
+        
+        env = gym.make_vec(env_name, num_envs=num_envs, vectorization_mode=vec_mode, wrappers=[wrapper_cls], render_mode=render_mode)
+        print(f"Using {num_envs} vectorized environments ({vec_mode}) with AlternatingLegsRewardWrapper (scale={alternating_legs_scale})")
     else:
-        env = gym.make(env_name)
+        env = gym.make(env_name, render_mode=render_mode)
         env = AlternatingLegsRewardWrapper(env, scale=alternating_legs_scale)
         print(f"Using AlternatingLegsRewardWrapper with scale={alternating_legs_scale}")
         
