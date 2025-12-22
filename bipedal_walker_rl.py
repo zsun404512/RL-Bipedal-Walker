@@ -458,9 +458,10 @@ def run_ablation_study(device="cpu"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train SAC Agent on BipedalWalker-v3")
-    parser.add_argument("--episodes", type=int, default=2000, help="Number of episodes to train")
+    parser.add_argument("--episodes", type=int, default=1000, help="Number of episodes to train")
     parser.add_argument("--device", type=str, default=None, help="Device to use (cpu, cuda, mps)")
     parser.add_argument("--updates", type=int, default=2, help="Number of gradient updates per environment step")
+    parser.add_argument("--num-envs", type=int, default=4, help="Number of parallel environments to run")
     parser.add_argument("--mode", type=str, default="train", choices=["train", "ablation"], help="Mode to run: train or ablation")
     parser.add_argument("--no-log-file", action="store_true", help="Disable logging to file")
     parser.add_argument("--render", action="store_true", help="Render the environment during training")
@@ -488,8 +489,8 @@ if __name__ == "__main__":
     
     if args.mode == "train":
         # Start training
-        print(f"Starting BipedalWalker training on {target_device} with {args.episodes} episodes and {args.updates} updates per step...")
-        rewards, trained_agent = train_agent(max_episodes=args.episodes, device=target_device, render=args.render, updates_per_step=args.updates)
+        print(f"Starting BipedalWalker training on {target_device} with {args.episodes} episodes, {args.updates} updates per step, and {args.num_envs} envs...")
+        rewards, trained_agent = train_agent(max_episodes=args.episodes, device=target_device, render=args.render, updates_per_step=args.updates, num_envs=args.num_envs)
         print("Training completed!")
         
         # Plot results
