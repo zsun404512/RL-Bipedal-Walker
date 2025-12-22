@@ -145,14 +145,18 @@ class SACAgent:
         
     def select_action(self, state, deterministic=False):
         with torch.no_grad():
-            state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            if state.ndim == 1:
+                state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            else:
+                state = torch.FloatTensor(state).to(self.device)
+                
             if deterministic:
                 mu, _ = self.actor(state)
                 action = torch.tanh(mu)
-                return action.squeeze(0).cpu().numpy()
+                return action.cpu().numpy() # Return batch if input was batch
             
             action, _ = self.actor.sample(state)
-            return action.squeeze(0).cpu().numpy()
+            return action.cpu().numpy()
     
     def update(self):
         if len(self.replay_buffer) < self.batch_size:
@@ -217,15 +221,25 @@ class SACAgent:
         for param, target_param in zip(self.critic2.parameters(), self.target_critic2.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, device="cpu", render=False, learning_rate=3e-4, updates_per_step=1, start_steps=10000):
+def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, device="cpu", render=False, learning_rate=3e-4, updates_per_step=1, start_steps=10000, num_envs=1):
     # Create environment
-    if render:
+    if num_envs > 1:
+        # Vectorized environment for faster data collection
+        env = gym.make_vec(env_name, num_envs=num_envs, vectorization_mode="async")
+        print(f"Using {num_envs} vectorized environments")
+    elif render:
         env = gym.make(env_name, render_mode="human")
     else:
         env = gym.make(env_name)
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-    action_scale = float(env.action_space.high[0])
+        
+    if num_envs > 1:
+        state_dim = env.single_observation_space.shape[0]
+        action_dim = env.single_action_space.shape[0]
+        action_scale = float(env.single_action_space.high[0])
+    else:
+        state_dim = env.observation_space.shape[0]
+        action_dim = env.action_space.shape[0]
+        action_scale = float(env.action_space.high[0])
     
     # Set random seeds
     set_seed(42)
@@ -242,64 +256,128 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
     os.makedirs("logs", exist_ok=True)
     
     # Progress bar
+    # For vec env, we count total steps across all envs or simple steps? 
+    # Usually episodes is harder to track in vec env without wrappers.
+    # We'll treat max_episodes as "update cycles" or similar if vec env, or just track differently.
+    # Simplified: loop max_episodes, but for vec env this might be faster.
     pbar = tqdm(range(max_episodes), desc="Training Progress", unit="ep")
     
-    for episode in pbar:
-        state, _ = env.reset()
-        episode_reward = 0
-        
+    current_episode = 0
+    
+    # Reset env
+    state, _ = env.reset()
+    
+    # If not vec env, wrap state to be consistent (1, dim) if we want unified code, 
+    # but our select_action handles it. 
+    # For vec env, state is already (num_envs, dim).
+    
+    while current_episode < max_episodes:
+        episode_reward = 0 # This won't be accurate for vec env per step
+        # For vec env, we need to track rewards per env
+        if num_envs > 1:
+            current_rewards = np.zeros(num_envs)
+            
         for step in range(max_steps):
-            # Select action (random exploration during warmup)
+            # Select action
             if total_steps < start_steps:
-                action = env.action_space.sample()
+                if num_envs > 1:
+                    action = env.action_space.sample()
+                else:
+                    action = env.action_space.sample()
             else:
-                action = agent.select_action(state)
+                # Agent expects single state, modify for batch
+                if num_envs > 1:
+                    action = agent.select_action(state, deterministic=False) # select_action needs update for batch
+                else:
+                    action = agent.select_action(state)
             
-            # Take step in environment
-            next_state, reward, done, truncated, _ = env.step(action)
-            done_flag = done or truncated
+            # Take step
+            next_state, reward, done, truncated, info = env.step(action)
             
-            # Store transition in replay buffer
-            agent.replay_buffer.add(state, action, reward, next_state, done_flag)
+            # Handle done/truncated for buffer
+            if num_envs > 1:
+                done_flag = done | truncated
+                current_rewards += reward
+                
+                # Check for completed episodes
+                for i in range(num_envs):
+                    if done_flag[i]:
+                        # Handle terminal observation
+                        if "final_observation" in info:
+                            real_next_state = info["final_observation"][i]
+                            # Store the transition with the real terminal state
+                            # But wait, next_state[i] is already reset.
+                            # We need to add (state[i], action[i], reward[i], real_next_state, True)
+                            # For simple vectorized implementation, we might add them individually or construct batch
+                            pass
+                        
+                        episode_rewards.append(current_rewards[i])
+                        current_rewards[i] = 0
+                        current_episode += 1
+                        pbar.update(1)
+                        if current_episode >= max_episodes:
+                            break
+                
+                # For buffer addition, we need to use real_next_states where done is True
+                # Copy next_state to real_next_state
+                real_next_states = next_state.copy()
+                if "final_observation" in info:
+                    # 'final_observation' is a list of arrays for done envs or None
+                    # Depending on gym version. In gymnasium, it's usually masked.
+                    # info["final_observation"] is array of obs where done is True
+                    # info["_final_observation"] is boolean mask
+                    if "_final_observation" in info:
+                        mask = info["_final_observation"]
+                        for i, is_final in enumerate(mask):
+                            if is_final:
+                                real_next_states[i] = info["final_observation"][i]
+                
+                agent.replay_buffer.add(state, action, reward, real_next_states, done_flag)
+                
+            else:
+                done_flag = done or truncated
+                # Store transition
+                agent.replay_buffer.add(state, action, reward, next_state, done_flag)
+                episode_reward += reward
+                
+                if done_flag:
+                    episode_rewards.append(episode_reward)
+                    current_episode += 1
+                    pbar.update(1)
+                    state, _ = env.reset()
+                    break
+            
+            state = next_state
+            total_steps += num_envs
             
             # Update agent
             if len(agent.replay_buffer) > agent.batch_size and total_steps >= start_steps:
-                for _ in range(updates_per_step):
+                for _ in range(updates_per_step * num_envs): # Scale updates with num_envs
                     agent.update()
+                    
+        # Logging and Checkpointing (moved outside inner loop for vec env logic compatibility)
+        if len(episode_rewards) > 0:
+            avg_reward = np.mean(episode_rewards[-10:])
+            pbar.set_postfix({
+                'Last Reward': f'{episode_rewards[-1]:.2f}',
+                'Avg Reward (10)': f'{avg_reward:.2f}',
+                'Total Steps': total_steps
+            })
             
-            state = next_state
-            episode_reward += reward
-            total_steps += 1
-            
-            if done_flag:
-                break
-        
-        episode_rewards.append(episode_reward)
-        avg_reward = np.mean(episode_rewards[-10:])
-        
-        # Update progress bar
-        pbar.set_postfix({
-            'Last Reward': f'{episode_reward:.2f}',
-            'Avg Reward (10)': f'{avg_reward:.2f}',
-            'Total Steps': total_steps
-        })
-        
-        # Log progress every 10 episodes
-        if (episode + 1) % 10 == 0:
-            print(f"Episode: {episode+1}/{max_episodes} | Reward: {episode_reward:.2f} | Avg Reward (10): {avg_reward:.2f} | Total Steps: {total_steps}")
-        
-        # Save model checkpoint
-        if (episode + 1) % 50 == 0:
-            os.makedirs("logs", exist_ok=True)
-            torch.save({
-                'actor_state_dict': agent.actor.state_dict(),
-                'critic1_state_dict': agent.critic1.state_dict(),
-                'critic2_state_dict': agent.critic2.state_dict(),
-                'episode': episode,
-                'reward': episode_reward,
-                'learning_rate': learning_rate
-            }, f"logs/bipedal_walker_checkpoint_ep{episode+1}.pth")
-    
+            if (current_episode) % 10 == 0:
+                # Avoid spamming log
+                pass
+                
+            if (current_episode) % 50 == 0:
+                 os.makedirs("logs", exist_ok=True)
+                 torch.save({
+                     'actor_state_dict': agent.actor.state_dict(),
+                     'critic1_state_dict': agent.critic1.state_dict(),
+                     'critic2_state_dict': agent.critic2.state_dict(),
+                     'episode': current_episode,
+                     'learning_rate': learning_rate
+                 }, f"logs/bipedal_walker_checkpoint_ep{current_episode}.pth")
+
     env.close()
     return episode_rewards, agent
 
