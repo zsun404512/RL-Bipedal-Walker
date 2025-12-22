@@ -28,19 +28,39 @@ def set_seed(seed=42):
         torch.backends.cudnn.deterministic = True
 
 class ReplayBuffer:
-    def __init__(self, buffer_size):
-        self.buffer = deque(maxlen=buffer_size)
+    def __init__(self, state_dim, action_dim, buffer_size=int(1e6)):
+        self.buffer_size = buffer_size
+        self.ptr = 0
+        self.size = 0
+        
+        self.state = np.zeros((buffer_size, state_dim), dtype=np.float32)
+        self.action = np.zeros((buffer_size, action_dim), dtype=np.float32)
+        self.reward = np.zeros((buffer_size, 1), dtype=np.float32)
+        self.next_state = np.zeros((buffer_size, state_dim), dtype=np.float32)
+        self.done = np.zeros((buffer_size, 1), dtype=np.float32)
     
     def add(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+        self.state[self.ptr] = state
+        self.action[self.ptr] = action
+        self.reward[self.ptr] = reward
+        self.next_state[self.ptr] = next_state
+        self.done[self.ptr] = done
+        
+        self.ptr = (self.ptr + 1) % self.buffer_size
+        self.size = min(self.size + 1, self.buffer_size)
     
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, min(len(self.buffer), batch_size))
-        states, actions, rewards, next_states, dones = zip(*batch)
-        return np.array(states), np.array(actions), np.array(rewards), np.array(next_states), np.array(dones)
+        ind = np.random.randint(0, self.size, size=batch_size)
+        return (
+            self.state[ind],
+            self.action[ind],
+            self.reward[ind],
+            self.next_state[ind],
+            self.done[ind]
+        )
     
     def __len__(self):
-        return len(self.buffer)
+        return self.size
 
 class ActorNetwork(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256):
@@ -97,6 +117,8 @@ class SACAgent:
         self.alpha = 0.2
         self.batch_size = 256
         self.buffer_size = int(1e6)
+        # Automatic entropy tuning target: -dim(A)
+        self.target_entropy = -float(action_dim)
         
         # Networks
         self.actor = ActorNetwork(state_dim, action_dim).to(self.device)
@@ -115,7 +137,7 @@ class SACAgent:
         self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=self.learning_rate)
         
         # Replay buffer
-        self.replay_buffer = ReplayBuffer(self.buffer_size)
+        self.replay_buffer = ReplayBuffer(state_dim, action_dim, self.buffer_size)
         
         # Log alpha for entropy adjustment
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
@@ -138,11 +160,13 @@ class SACAgent:
             
         # Sample from replay buffer
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+        
+        # Convert to tensors
         states = torch.FloatTensor(states).to(self.device)
         actions = torch.FloatTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device)
         next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
+        dones = torch.FloatTensor(dones).to(self.device)
         
         # Update critic
         with torch.no_grad():
@@ -193,7 +217,7 @@ class SACAgent:
         for param, target_param in zip(self.critic2.parameters(), self.target_critic2.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, device="cpu", render=False, learning_rate=3e-4):
+def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, device="cpu", render=False, learning_rate=3e-4, updates_per_step=1, start_steps=10000):
     # Create environment
     if render:
         env = gym.make(env_name, render_mode="human")
@@ -214,6 +238,9 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
     total_steps = 0
     episode_rewards = []
     
+    # Create logs directory if it doesn't exist
+    os.makedirs("logs", exist_ok=True)
+    
     # Progress bar
     pbar = tqdm(range(max_episodes), desc="Training Progress", unit="ep")
     
@@ -222,25 +249,29 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
         episode_reward = 0
         
         for step in range(max_steps):
-            # Select action
-            action = agent.select_action(state)
+            # Select action (random exploration during warmup)
+            if total_steps < start_steps:
+                action = env.action_space.sample()
+            else:
+                action = agent.select_action(state)
             
             # Take step in environment
             next_state, reward, done, truncated, _ = env.step(action)
-            done = done or truncated
+            done_flag = done or truncated
             
             # Store transition in replay buffer
-            agent.replay_buffer.add(state, action, reward, next_state, done)
+            agent.replay_buffer.add(state, action, reward, next_state, done_flag)
             
             # Update agent
-            if len(agent.replay_buffer) > agent.batch_size:
-                agent.update()
+            if len(agent.replay_buffer) > agent.batch_size and total_steps >= start_steps:
+                for _ in range(updates_per_step):
+                    agent.update()
             
             state = next_state
             episode_reward += reward
             total_steps += 1
             
-            if done:
+            if done_flag:
                 break
         
         episode_rewards.append(episode_reward)
@@ -266,6 +297,7 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
                 'critic2_state_dict': agent.critic2.state_dict(),
                 'episode': episode,
                 'reward': episode_reward,
+                'learning_rate': learning_rate
             }, f"logs/bipedal_walker_checkpoint_ep{episode+1}.pth")
     
     env.close()
@@ -350,6 +382,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train SAC Agent on BipedalWalker-v3")
     parser.add_argument("--episodes", type=int, default=2000, help="Number of episodes to train")
     parser.add_argument("--device", type=str, default=None, help="Device to use (cpu, cuda, mps)")
+    parser.add_argument("--updates", type=int, default=2, help="Number of gradient updates per environment step")
     parser.add_argument("--mode", type=str, default="train", choices=["train", "ablation"], help="Mode to run: train or ablation")
     parser.add_argument("--no-log-file", action="store_true", help="Disable logging to file")
     parser.add_argument("--render", action="store_true", help="Render the environment during training")
@@ -377,8 +410,8 @@ if __name__ == "__main__":
     
     if args.mode == "train":
         # Start training
-        print(f"Starting BipedalWalker training on {target_device} with {args.episodes} episodes...")
-        rewards, trained_agent = train_agent(max_episodes=args.episodes, device=target_device, render=args.render)
+        print(f"Starting BipedalWalker training on {target_device} with {args.episodes} episodes and {args.updates} updates per step...")
+        rewards, trained_agent = train_agent(max_episodes=args.episodes, device=target_device, render=args.render, updates_per_step=args.updates)
         print("Training completed!")
         
         # Plot results
