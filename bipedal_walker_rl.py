@@ -13,6 +13,8 @@ import random
 import os
 import glob
 import argparse
+import logging
+import sys
 from datetime import datetime
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -28,6 +30,60 @@ def set_seed(seed=42):
     random.seed(seed)
     if torch.cuda.is_available():
         torch.backends.cudnn.deterministic = True
+
+# Define a custom handler to work with tqdm
+class TqdmLoggingHandler(logging.Handler):
+    def __init__(self, level=logging.NOTSET):
+        super().__init__(level)
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            tqdm.write(msg)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+def setup_logger(log_dir="logs"):
+    os.makedirs(log_dir, exist_ok=True)
+    logger = logging.getLogger("BipedalWalker")
+    logger.setLevel(logging.INFO)
+    
+    # Clear existing handlers to avoid duplicate logs
+    if logger.hasHandlers():
+        logger.handlers.clear()
+        
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"training_{timestamp}.log")
+    
+    # File handler
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+    
+    # Console handler using TqdmLoggingHandler
+    ch = TqdmLoggingHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+    
+    return logger
+
+def save_checkpoint(agent, episode, learning_rate, log_dir="logs", filename=None):
+    if filename is None:
+        filename = f"checkpoint_ep{episode}.pth"
+    
+    path = os.path.join(log_dir, filename)
+    torch.save({
+        'actor_state_dict': agent.actor.state_dict(),
+        'critic1_state_dict': agent.critic1.state_dict(),
+        'critic2_state_dict': agent.critic2.state_dict(),
+        'episode': episode,
+        'learning_rate': learning_rate
+    }, path)
+    return path
 
 class ReplayBuffer:
     def __init__(self, state_dim, action_dim, buffer_size=int(1e6)):
@@ -253,7 +309,11 @@ class AlternatingLegsRewardWrapper(gym.Wrapper):
         
         return state, reward, done, truncated, info
 
-def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, device="cpu", render=False, learning_rate=3e-4, updates_per_step=1, start_steps=10000, num_envs=1, alternating_legs_scale=5.0):
+def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, device="cpu", render=False, learning_rate=3e-4, updates_per_step=1, start_steps=10000, num_envs=1, alternating_legs_scale=5.0, save_interval=10):
+    # Setup logger
+    logger = setup_logger()
+    logger.info(f"Starting training with device: {device}, LR: {learning_rate}, Num Envs: {num_envs}")
+    
     # Determine render mode
     # We use rgb_array for manual rendering with OpenCV to support multiple windows
     render_mode = "rgb_array" if render else None
@@ -272,11 +332,11 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
         vec_mode = "sync" if render else "async"
         
         env = gym.make_vec(env_name, num_envs=num_envs, vectorization_mode=vec_mode, wrappers=[wrapper_cls], render_mode=render_mode)
-        print(f"Using {num_envs} vectorized environments ({vec_mode}) with AlternatingLegsRewardWrapper (scale={alternating_legs_scale})")
+        logger.info(f"Using {num_envs} vectorized environments ({vec_mode}) with AlternatingLegsRewardWrapper (scale={alternating_legs_scale})")
     else:
         env = gym.make(env_name, render_mode=render_mode)
         env = AlternatingLegsRewardWrapper(env, scale=alternating_legs_scale)
-        print(f"Using AlternatingLegsRewardWrapper with scale={alternating_legs_scale}")
+        logger.info(f"Using AlternatingLegsRewardWrapper with scale={alternating_legs_scale}")
         
     if num_envs > 1:
         state_dim = env.single_observation_space.shape[0]
@@ -291,7 +351,7 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
     set_seed(42)
     
     # Initialize agent
-    print(f"Initializing SAC Agent on device: {device} with LR: {learning_rate}")
+    logger.info(f"Initializing SAC Agent on device: {device} with LR: {learning_rate}")
     agent = SACAgent(state_dim, action_dim, action_scale, device=device, learning_rate=learning_rate)
     
     # Training loop
@@ -302,10 +362,6 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
     os.makedirs("logs", exist_ok=True)
     
     # Progress bar
-    # For vec env, we count total steps across all envs or simple steps? 
-    # Usually episodes is harder to track in vec env without wrappers.
-    # We'll treat max_episodes as "update cycles" or similar if vec env, or just track differently.
-    # Simplified: loop max_episodes, but for vec env this might be faster.
     pbar = tqdm(range(max_episodes), desc="Training Progress", unit="ep")
     
     current_episode = 0
@@ -313,175 +369,159 @@ def train_agent(env_name="BipedalWalker-v3", max_episodes=1000, max_steps=1000, 
     # Reset env
     state, _ = env.reset()
     
-    # If not vec env, wrap state to be consistent (1, dim) if we want unified code, 
-    # but our select_action handles it. 
-    # For vec env, state is already (num_envs, dim).
-    
-    while current_episode < max_episodes:
-        episode_reward = 0 # This won't be accurate for vec env per step
-        # For vec env, we need to track rewards per env
-        if num_envs > 1:
-            current_rewards = np.zeros(num_envs)
-            
-        for step in range(max_steps):
-            # Select action
-            if total_steps < start_steps:
-                if num_envs > 1:
-                    action = env.action_space.sample()
-                else:
-                    action = env.action_space.sample()
-            else:
-                # Agent expects single state, modify for batch
-                if num_envs > 1:
-                    action = agent.select_action(state, deterministic=False) # select_action needs update for batch
-                else:
-                    action = agent.select_action(state)
-            
-            # Take step
-            next_state, reward, done, truncated, info = env.step(action)
-            
-            # Update step counts and handle rendering
-            if render:
-                frames = env.render()
-                # If frames is a tuple (vec env), iterate. If single (list/array), handle accordingly.
-                # make_vec with rgb_array usually returns a tuple of frames.
-                
-                # Update counters
-                for i in range(num_envs):
-                    if num_envs > 1:
-                        is_done = done[i] or truncated[i]
-                    else:
-                        is_done = done or truncated
-                    
-                    if is_done:
-                        env_episode_counts[i] += 1
-                        env_step_counts[i] = 0
-                    else:
-                        env_step_counts[i] += 1
-                        
-                # Display frames
-                if isinstance(frames, (tuple, list)) and len(frames) == num_envs:
-                    for i, frame in enumerate(frames):
-                        # Convert RGB to BGR for OpenCV
-                        if isinstance(frame, np.ndarray):
-                            bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                            
-                            # Add text overlay
-                            text_info = [
-                                f"Unit: {i}",
-                                f"Ep: {env_episode_counts[i]}",
-                                f"Step: {env_step_counts[i]}"
-                            ]
-                            
-                            for j, line in enumerate(text_info):
-                                cv2.putText(bgr_frame, line, (10, 30 + j*25), 
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                            
-                            cv2.imshow(f"Unit {i}", bgr_frame)
-                    
-                    cv2.waitKey(1)
-                elif isinstance(frames, np.ndarray) and num_envs == 1:
-                     # Handle single env case if it returns single frame array
-                     bgr_frame = cv2.cvtColor(frames, cv2.COLOR_RGB2BGR)
-                     text_info = [
-                        f"Unit: 0",
-                        f"Ep: {env_episode_counts[0]}",
-                        f"Step: {env_step_counts[0]}"
-                     ]
-                     for j, line in enumerate(text_info):
-                        cv2.putText(bgr_frame, line, (10, 30 + j*25), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                     cv2.imshow("Unit 0", bgr_frame)
-                     cv2.waitKey(1)
-
-            # Handle done/truncated for buffer
+    try:
+        while current_episode < max_episodes:
+            episode_reward = 0 
             if num_envs > 1:
-                done_flag = done | truncated
-                current_rewards += reward
+                current_rewards = np.zeros(num_envs)
                 
-                # Check for completed episodes
-                for i in range(num_envs):
-                    if done_flag[i]:
-                        # Handle terminal observation
-                        if "final_observation" in info:
-                            real_next_state = info["final_observation"][i]
-                            # Store the transition with the real terminal state
-                            # But wait, next_state[i] is already reset.
-                            # We need to add (state[i], action[i], reward[i], real_next_state, True)
-                            # For simple vectorized implementation, we might add them individually or construct batch
-                            pass
+            for step in range(max_steps):
+                # Select action
+                if total_steps < start_steps:
+                    if num_envs > 1:
+                        action = env.action_space.sample()
+                    else:
+                        action = env.action_space.sample()
+                else:
+                    if num_envs > 1:
+                        action = agent.select_action(state, deterministic=False) 
+                    else:
+                        action = agent.select_action(state)
+                
+                # Take step
+                next_state, reward, done, truncated, info = env.step(action)
+                
+                # Rendering logic
+                if render:
+                    frames = env.render()
+                    
+                    # Update counters
+                    for i in range(num_envs):
+                        if num_envs > 1:
+                            is_done = done[i] or truncated[i]
+                        else:
+                            is_done = done or truncated
                         
-                        episode_rewards.append(current_rewards[i])
-                        current_rewards[i] = 0
-                        current_episode += 1
-                        pbar.update(1)
-                        if current_episode >= max_episodes:
-                            break
+                        if is_done:
+                            env_episode_counts[i] += 1
+                            env_step_counts[i] = 0
+                        else:
+                            env_step_counts[i] += 1
+                            
+                    # Display frames
+                    if isinstance(frames, (tuple, list)) and len(frames) == num_envs:
+                        for i, frame in enumerate(frames):
+                            # Convert RGB to BGR for OpenCV
+                            if isinstance(frame, np.ndarray):
+                                bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                                
+                                # Add text overlay
+                                text_info = [
+                                    f"Unit: {i}",
+                                    f"Ep: {env_episode_counts[i]}",
+                                    f"Step: {env_step_counts[i]}"
+                                ]
+                                
+                                for j, line in enumerate(text_info):
+                                    cv2.putText(bgr_frame, line, (10, 30 + j*25), 
+                                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                                
+                                cv2.imshow(f"Unit {i}", bgr_frame)
+                        
+                        cv2.waitKey(1)
+                    elif isinstance(frames, np.ndarray) and num_envs == 1:
+                         # Handle single env case if it returns single frame array
+                         bgr_frame = cv2.cvtColor(frames, cv2.COLOR_RGB2BGR)
+                         text_info = [
+                            f"Unit: 0",
+                            f"Ep: {env_episode_counts[0]}",
+                            f"Step: {env_step_counts[0]}"
+                         ]
+                         for j, line in enumerate(text_info):
+                            cv2.putText(bgr_frame, line, (10, 30 + j*25), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                         cv2.imshow("Unit 0", bgr_frame)
+                         cv2.waitKey(1)
                 
-                # For buffer addition, we need to use real_next_states where done is True
-                # Copy next_state to real_next_state
-                real_next_states = next_state.copy()
-                if "final_observation" in info:
-                    # 'final_observation' is a list of arrays for done envs or None
-                    # Depending on gym version. In gymnasium, it's usually masked.
-                    # info["final_observation"] is array of obs where done is True
-                    # info["_final_observation"] is boolean mask
+                # Handle done/truncated
+                if num_envs > 1:
+                    done_flag = done | truncated
+                    current_rewards += reward
+                    
+                    for i in range(num_envs):
+                        if done_flag[i]:
+                            episode_rewards.append(current_rewards[i])
+                            current_rewards[i] = 0
+                            current_episode += 1
+                            pbar.update(1)
+                            
+                            # Checkpoint logic
+                            if current_episode % save_interval == 0:
+                                path = save_checkpoint(agent, current_episode, learning_rate)
+                                logger.info(f"Checkpoint saved at episode {current_episode}: {path}")
+                                
+                            if current_episode >= max_episodes:
+                                break
+                    
+                    # Buffer addition for vec env
+                    real_next_states = next_state.copy()
                     if "_final_observation" in info:
                         mask = info["_final_observation"]
                         for i, is_final in enumerate(mask):
-                            if is_final:
+                            if is_final and "final_observation" in info:
                                 real_next_states[i] = info["final_observation"][i]
-                
-                agent.replay_buffer.add(state, action, reward, real_next_states, done_flag)
-                
-            else:
-                done_flag = done or truncated
-                # Store transition
-                agent.replay_buffer.add(state, action, reward, next_state, done_flag)
-                episode_reward += reward
-                
-                if done_flag:
-                    episode_rewards.append(episode_reward)
-                    current_episode += 1
-                    pbar.update(1)
-                    state, _ = env.reset()
-                    break
-            
-            state = next_state
-            total_steps += num_envs
-            
-            # Update agent
-            if len(agent.replay_buffer) > agent.batch_size and total_steps >= start_steps:
-                for _ in range(updates_per_step * num_envs): # Scale updates with num_envs
-                    agent.update()
                     
-        # Logging and Checkpointing (moved outside inner loop for vec env logic compatibility)
-        if len(episode_rewards) > 0:
-            avg_reward = np.mean(episode_rewards[-10:])
-            pbar.set_postfix({
-                'Last Reward': f'{episode_rewards[-1]:.2f}',
-                'Avg Reward (10)': f'{avg_reward:.2f}',
-                'Total Steps': total_steps
-            })
-            
-            if (current_episode) % 10 == 0:
-                # Avoid spamming log
-                pass
+                    agent.replay_buffer.add(state, action, reward, real_next_states, done_flag)
+                    
+                else:
+                    done_flag = done or truncated
+                    agent.replay_buffer.add(state, action, reward, next_state, done_flag)
+                    episode_reward += reward
+                    
+                    if done_flag:
+                        episode_rewards.append(episode_reward)
+                        current_episode += 1
+                        pbar.update(1)
+                        
+                        # Checkpoint logic
+                        if current_episode % save_interval == 0:
+                             path = save_checkpoint(agent, current_episode, learning_rate)
+                             logger.info(f"Checkpoint saved at episode {current_episode}: {path}")
+                        
+                        state, _ = env.reset()
+                        break
                 
-            if (current_episode) % 50 == 0:
-                 os.makedirs("logs", exist_ok=True)
-                 torch.save({
-                     'actor_state_dict': agent.actor.state_dict(),
-                     'critic1_state_dict': agent.critic1.state_dict(),
-                     'critic2_state_dict': agent.critic2.state_dict(),
-                     'episode': current_episode,
-                     'learning_rate': learning_rate
-                 }, f"logs/bipedal_walker_checkpoint_ep{current_episode}.pth")
+                state = next_state
+                total_steps += num_envs
+                
+                # Update agent
+                if len(agent.replay_buffer) > agent.batch_size and total_steps >= start_steps:
+                    for _ in range(updates_per_step * num_envs):
+                        agent.update()
+                        
+            # Logging progress occasionally
+            if len(episode_rewards) > 0 and current_episode % 10 == 0:
+                avg_reward = np.mean(episode_rewards[-10:])
+                pbar.set_postfix({
+                    'Last Reward': f'{episode_rewards[-1]:.2f}',
+                    'Avg Reward (10)': f'{avg_reward:.2f}',
+                    'Steps': total_steps
+                })
+                logger.info(f"Episode {current_episode}: Avg Reward (10) = {avg_reward:.2f}, Total Steps = {total_steps}")
+                
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted by user. Saving emergency checkpoint...")
+        path = save_checkpoint(agent, current_episode, learning_rate, filename=f"emergency_checkpoint_ep{current_episode}.pth")
+        logger.info(f"Emergency checkpoint saved: {path}")
+    except Exception as e:
+        logger.error(f"Error occurred: {e}")
+        raise e
+    finally:
+        if render:
+            cv2.destroyAllWindows()
+        env.close()
+        logger.info("Training finished/stopped.")
 
-    if render:
-        cv2.destroyAllWindows()
-        
-    env.close()
     return episode_rewards, agent
 
 def record_video(agent, env_name="BipedalWalker-v3", filename="bipedal_walker", device="cpu"):
@@ -576,11 +616,13 @@ if __name__ == "__main__":
     
     # Redirect output to log file unless disabled
     if not args.no_log_file:
-        import sys
+        # We rely on setup_logger which writes to a file in logs/
+        pass
+        # import sys
         # Keep original stdout for tqdm to work properly if needed, but here we redirect everything
         # For better tqdm support with file logging, one might use TQDM's write or separate logging
         # But matching previous behavior:
-        sys.stdout = open(f"logs/training_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log", 'w')
+        # sys.stdout = open(f"logs/training_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log", 'w')
     
     # Determine device
     if args.device:
