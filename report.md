@@ -108,9 +108,17 @@ Caption: Episode reward trajectories across 500 episodes comparing baseline vs. 
 
 Caption: Impact of learning rate on final average episode reward. Lower learning rates (1e-4) improved stability but required longer training, while 3e-4 balanced convergence speed and performance.
 
+### Ablation: Setting a best configuration with ablation grid
+
+The training logs can be see in the logs folder [here](logs/ablations/).
+
+![Ablation for best configuration](figs/full_ablation_study_output.png)
+
 ### Demo Video (Parallelization)
 
-- [run_20251225_202943_ec860c_on_colab_32_parallel-episode-0.mp4](videos/run_20251225_202943_ec860c_on_colab_32_parallel-episode-0.mp4)
+I have written scripts to visualize the video of a best performance of robot in both cases of terrains without obstacles and terrains with obstacles with difficulty 0.7 (see [obstacles's README](OBSTACLES_README.md)). 
+
+- [Video](videos/run_20251227_161924_on_colab_32_parallel-episode-990.mp4) and [logs](logs/run_20251227_161924_on_colab_32_parallel) for terrain without obstacles
 
 ## References
 [^1]: Haarnoja, T., Zhou, A., Abbeel, P., & Levine, S. (2018). "Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor." *International Conference on Machine Learning (ICML)*. [arXiv:1801.01290](https://arxiv.org/abs/1801.01290)

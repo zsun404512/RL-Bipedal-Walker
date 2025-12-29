@@ -2,3 +2,8 @@
 /temp
 /notes
 /logs
+
+!/logs/ablations
+!/logs/run_20251227_161924_on_colab_32_parallel
+
+**/params.csv

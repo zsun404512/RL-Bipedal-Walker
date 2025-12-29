@@ -1,0 +1,22 @@
+2025-12-29 15:04:03,202 - INFO - Starting training with device: cuda, LR: 3e-05, Num Envs: 32
+2025-12-29 15:04:03,205 - INFO - Hyperparams: tau=0.005, batch_size=1024, buffer_size=1000000, target_entropy=-4.0, hidden_dim=256, seed=42
+2025-12-29 15:04:03,208 - INFO - Obstacles enabled: False, Difficulty: N/A
+2025-12-29 15:04:03,211 - INFO - Logs and checkpoints will be saved to: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643
+2025-12-29 15:04:04,091 - INFO - Using 32 vectorized environments (async) with WalkingRewardWrapper
+2025-12-29 15:04:04,098 - INFO - Initializing SAC Agent on device: cuda
+2025-12-29 15:16:06,747 - INFO - Checkpoint saved at episode 100: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep100.pth
+2025-12-29 15:32:34,825 - INFO - Checkpoint saved at episode 200: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep200.pth
+2025-12-29 15:51:48,186 - INFO - Episode 280: Avg Reward (10) = 225.93, Total Steps = 224000
+2025-12-29 15:59:09,213 - INFO - Checkpoint saved at episode 300: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep300.pth
+2025-12-29 16:26:02,139 - INFO - Checkpoint saved at episode 400: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep400.pth
+2025-12-29 16:33:42,633 - INFO - Episode 430: Avg Reward (10) = 403.63, Total Steps = 416000
+2025-12-29 16:50:56,420 - INFO - Checkpoint saved at episode 500: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep500.pth
+2025-12-29 17:14:59,622 - INFO - Checkpoint saved at episode 600: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep600.pth
+2025-12-29 17:38:02,743 - INFO - Checkpoint saved at episode 700: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep700.pth
+2025-12-29 17:50:37,277 - INFO - Episode 750: Avg Reward (10) = 498.32, Total Steps = 768000
+2025-12-29 18:00:44,706 - INFO - Checkpoint saved at episode 800: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep800.pth
+2025-12-29 18:22:49,903 - INFO - Checkpoint saved at episode 900: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep900.pth
+2025-12-29 18:25:40,451 - INFO - Episode 910: Avg Reward (10) = 542.01, Total Steps = 928000
+2025-12-29 18:45:05,688 - INFO - Checkpoint saved at episode 1000: logs/ablations/seed42_lr3e-05_ent-4.0_upd1_tau0.005_bs1024_buf1000000_env32_obs0d0.0_h256_t1767020643/checkpoint_ep1000.pth
+2025-12-29 18:45:06,291 - INFO - Episode 1000: Avg Reward (10) = 425.61, Total Steps = 1016800
+2025-12-29 18:45:07,235 - INFO - Training finished/stopped.

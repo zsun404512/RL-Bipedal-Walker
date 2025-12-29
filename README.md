@@ -1,6 +1,6 @@
 # AISF Application - BipedalWalker RL Agent
 
-This repository contains the implementation of a Reinforcement Learning agent to solve the `BipedalWalker-v3` environment as part of the AISF Application. For report reviewing, look [here](report.md)
+This repository contains the implementation of a Reinforcement Learning agent to solve the `BipedalWalker-v3` environment as part of the AISF Application. For report reviewing, look [here](report.md).
 
 ## Project Structure
 
