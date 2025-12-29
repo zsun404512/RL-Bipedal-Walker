@@ -1,6 +1,6 @@
 # AISF Application - BipedalWalker RL Agent
 
-This repository contains the implementation of a Reinforcement Learning agent to solve the `BipedalWalker-v3` environment as part of the AISF Application.
+This repository contains the implementation of a Reinforcement Learning agent to solve the `BipedalWalker-v3` environment as part of the AISF Application. For report reviewing, look [here](report.md)
 
 ## Project Structure
 
@@ -62,100 +62,102 @@ The code automatically detects and uses the available hardware acceleration:
 
 ## Environment Initialization
 
-You can run multiple environments in parallel to speed up training. Recommended configurations:
-
-- **Colab (CUDA GPU)**: Use 32 parallel environments.
-- **macOS (MPS)**: Use 4 parallel environments for faster throughput.
-- **Rendering enabled**: Use only 1 environment to avoid UI contention and slowdowns.
-
-Example setup using Gymnasium's vector API:
+The notebook automatically detects hardware and configures parallel environments:
 
 ```python
-import torch
-import gymnasium as gym
+# Device auto-detection (cell 3)
+if torch.backends.mps.is_available():
+    device = torch.device("mps")  # macOS Apple Silicon
+elif torch.cuda.is_available():
+    device = torch.device("cuda")  # NVIDIA GPU
+else:
+    device = torch.device("cpu")
 
-# Select device automatically
-device = (
-   "cuda" if torch.cuda.is_available() else
-   ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
-)
-
-def make_envs(n_envs: int, render: bool = False):
-   render_mode = "human" if render else None
-   env = gym.vector.make("BipedalWalker-v3", num_envs=n_envs, render_mode=render_mode)
-   return env
-
-# Recommended configurations
-# Colab with CUDA GPU
-env = make_envs(n_envs=32, render=False)
-
-# macOS with MPS (Apple Silicon)
-# env = make_envs(n_envs=4, render=False)
-
-# Rendering-enabled run (use a single environment)
-# env = make_envs(n_envs=1, render=True)
+# Parallel environment setup (cell 15)
+NUM_ENVS = 32  # Colab with CUDA: 32 | macOS with MPS: 4 | Rendering: 1
 ```
 
-If your training loop or agent class expects a single-environment interface, consider using wrappers to adapt vectorized environments or switch to `num_envs=1`. For recording videos, prefer running evaluation with `num_envs=1` and `render_mode="human"` or use a video wrapper.
+### Recommended Parallel Environment Counts
+
+| Platform | Hardware | NUM_ENVS | Notes |
+|----------|----------|----------|-------|
+| **Google Colab** | T4 GPU (CUDA) | 32 | Maximize sample collection |
+| **macOS** | Apple Silicon (MPS) | 4 | Balance speed and stability |
+| **Rendering/Video** | Any | 1 | Single env for video recording |
+
+The training loop uses `gym.vector.AsyncVectorEnv` internally to run multiple environments in parallel, significantly speeding up data collection while decorrelating experience for the replay buffer.
 
 ## Quick Start
 
-### Notebook (Recommended)
+### Notebook Workflow
 
-1. Open `bipedal_walker_rl.ipynb`.
-2. Install dependencies using the platform-specific steps above.
-3. Set parallel environments per platform:
-   - Colab (CUDA): 32
-   - macOS (MPS): 4
-   - Rendering: 1
-4. Run cells to train, log metrics, and optionally record videos.
+1. **Open** `bipedal_walker_rl.ipynb`
+2. **Install dependencies** (first two cells):
+   - For Colab: `!pip install swig` and `!pip install gymnasium[box2d]`, then mount Google Drive
+   - For macOS: `brew install swig`, then `pip install gymnasium[box2d]`
+3. **Configure training parameters** (cell 15):
+   ```python
+   MAX_EPISODES = 2000
+   NUM_ENVS = 32  # Use 32 on Colab (CUDA), 4 on macOS (MPS)
+   LEARNING_RATE = 1e-4
+   RENDER_FREQ = 0  # Set to 0 during training
+   ```
+4. **Choose training mode**:
+   - **With Obstacles** (default): Train agent to navigate platforms, gaps, and slopes
+   - **Baseline**: Comment out obstacles section and uncomment baseline section
+5. **Run training** cells to train and save checkpoints
+6. **Visualize results** with training curves and comparison plots
+7. **Generate videos** from saved checkpoints
 
 ### Training & Evaluation Flow
 
-- **Train**: Use vectorized envs (32 on Colab, 4 on macOS). Disable rendering during training.
-- **Checkpointing**: Checkpoints (`*.pth`) are saved under `logs/<run_id>/`.
-- **Evaluate & Render**: Switch to `num_envs=1` with `render_mode="human"` to visualize or record. Save videos under `videos/` or within a run-specific folder.
+- **Training**: Uses vectorized environments (32 on Colab CUDA, 4 on macOS MPS) with rendering disabled (`RENDER_FREQ=0`)
+- **Checkpoints**: Saved every 10 episodes to `logs/<run_id>/checkpoint_ep<N>.pth`
+- **Evaluation**: Load checkpoint and run with `ObstacleBipedalWrapper` to generate videos with obstacles visible
+- **Videos**: Saved to `videos/` directory with `.mp4` format
 
-Example evaluation snippet:
+### Video Generation from Checkpoint
 
 ```python
-# Single-env evaluation with rendering
-eval_env = gym.make("BipedalWalker-v3", render_mode="human")
-# load checkpoint, run policy for N steps/episodes
+# Load checkpoint and generate video with obstacles
+checkpoint_path = "logs/<run_id>/checkpoint_ep990.pth"
+eval_env = gym.make("BipedalWalker-v3", render_mode="rgb_array")
+eval_env = ObstacleBipedalWrapper(eval_env, difficulty=0.7, seed=42)
+
+# Initialize agent and load weights
+eval_agent = SACAgent(state_dim, action_dim, device=device)
+checkpoint = torch.load(checkpoint_path, map_location=device)
+eval_agent.actor.load_state_dict(checkpoint['actor_state_dict'])
+
+# Generate and save video (see final cell in notebook)
 ```
 
 ## Troubleshooting
 
-- **Box2D build errors**: Ensure `swig` is installed (`apt-get install -y swig` on Colab, `brew install swig` on macOS).
-- **PyTorch device**: Confirm `device` resolves to `cuda` on Colab or `mps` on macOS; otherwise training will run on CPU.
-- **Slow or choppy rendering**: Use `num_envs=1` and avoid rendering during training; render only for evaluation/demo.
-
-## Usage
-
-### Using Jupyter Notebook (Recommended)
-
-1. Open `bipedal_walker_rl.ipynb`.
-2. Run the cells in order to:
-   - Initialize the Soft Actor-Critic (SAC) agent.
-   - Train the agent in the `BipedalWalker-v3` environment.
-   - Visualize the training progress.
-   - Record and view a video of the trained agent.
-   - Fill out the writeup section.
-
-### Using Python Script
-
-1. Run the training script:
-   ```bash
-   python bipedal_walker_rl.py
-   ```
-2. Monitor the logs in the `logs/` directory.
+- **Box2D build errors**: Ensure `swig` is installed (`apt-get install -y swig` on Colab, `brew install swig` on macOS)
+- **PyTorch device**: Confirm `device` resolves to `cuda` on Colab or `mps` on macOS; otherwise training will run on CPU
+- **Slow or choppy rendering**: Use `NUM_ENVS=1` and avoid rendering during training (`RENDER_FREQ=0`)
+- **Obstacles not visible in video**: Ensure `ObstacleBipedalWrapper` is applied when creating the evaluation environment
 
 ## Implementation Details
 
-The agent is implemented using the **Soft Actor-Critic (SAC)** algorithm, which is an off-policy actor-critic method that maximizes a trade-off between expected return and entropy.
+The notebook implements the **Soft Actor-Critic (SAC)** algorithm with the following components:
 
-Key components:
-- **Actor Network**: Outputs mean and log standard deviation for the Gaussian policy.
-- **Critic Networks**: Two Q-value networks to mitigate overestimation bias.
-- **Replay Buffer**: Stores experience tuples for off-policy learning.
-- **Automatic Entropy Tuning**: Adjusts the temperature parameter $\alpha$ during training.
+### Core Architecture
+- **Actor Network**: 2-layer MLP (state_dim → 256 → 256 → action_dim) with Gaussian policy
+- **Twin Critic Networks**: Two Q-networks to mitigate overestimation bias
+- **Replay Buffer**: Stores 1M transitions for off-policy learning
+- **Target Networks**: Soft-updated with τ=0.005 (Polyak averaging)
+- **Automatic Entropy Tuning**: Learns temperature parameter α dynamically
+
+### Obstacle Environment
+- **ObstacleBipedalWrapper**: Procedurally generates platforms, gaps, and slopes on terrain
+- **Configurable difficulty**: 0.0 (easy) to 1.0 (hard), default 0.7
+- **Terrain modifications**: Adds ramps, pits, and stepping stones to increase challenge
+
+### Training Configuration
+- **Parallel Environments**: 32 async environments on Colab, 4 on macOS
+- **Learning Rate**: 1e-4 (stable for long training)
+- **Batch Size**: 256 samples per update
+- **Updates per Step**: 1 gradient update per environment step
+- **Start Steps**: 10,000 random exploration steps before learning
