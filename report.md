@@ -57,6 +57,24 @@ To overcome the difficult initial dynamics of the walker, I implemented a custom
 - **Stability Penalty**: Added negative rewards for significant hull angle deviations to keep the robot upright.
 - **Energy Penalty**: Penalized large actions to encourage smooth, efficient gait.
 
+#### Additional Reward Components for Obstacle Navigation
+
+For training agents to navigate environments with obstacles, I introduced two additional penalty terms specifically designed to encourage proper bipedal locomotion:
+
+- **Anti-Crouch Height Penalty**: Penalizes the agent for maintaining low hull heights to prevent crawling behavior:
+  ```
+  height_penalty = -4.0 × max(0, 1.0 - hull_height)²
+  ```
+  Where `hull_height` is extracted from `state[1]`. This quadratic penalty strongly discourages the agent from lowering its center of mass to "crawl" under obstacles, forcing it to maintain an upright walking posture and step over obstacles instead.
+
+- **Knee Straightness Penalty**: Encourages straighter leg configurations to improve clearance over obstacles:
+  ```
+  knee_penalty = -0.15 × (|knee1_angle| + |knee2_angle|)
+  ```
+  Where `knee1_angle` and `knee2_angle` are extracted from `state[6]` and `state[11]` respectively. This penalty promotes more extended leg movements during the stride, which is crucial for successfully clearing dense obstacle fields.
+
+These penalties were critical for achieving robust obstacle navigation at higher difficulty levels (difficulty=0.7-1.0), where the agent must navigate through 60-80+ obstacles per episode. Without these penalties, agents often learned to crouch or crawl, which limited their ability to clear obstacles effectively.
+
 ### 3. Vectorized Environments (Parallelization)
 I utilized `gym.make_vec` (Async Vector Environment) to run **32 environments in parallel**. 
 - **Benefit**: This drastically reduced wall-clock training time. Instead of collecting 1 step per cycle, the agent collects 32 steps. This decorrelates the experience in the replay buffer and provides a more diverse set of states for the learner, stabilizing the gradient updates.
@@ -119,6 +137,9 @@ The training logs can be see in the logs folder [here](logs/ablations/).
 I have written scripts to visualize the video of a best performance of robot in both cases of terrains without obstacles and terrains with obstacles with difficulty 0.7 (see [obstacles's README](OBSTACLES_README.md)). 
 
 - [Video](videos/run_20251227_161924_on_colab_32_parallel-episode-990.mp4) and [logs](logs/run_20251227_161924_on_colab_32_parallel) for terrain without obstacles
+- [Video](videos/run_obstacles_d0.7_20251229_140503_on_colab_32_T4_249060-episode-1310.mp4) and [logs](logs/run_obstacles_d0.7_20251229_140503_on_colab_32_T4_249060) for terrain with obstacles (difficulty=0.7)
+
+Notice that due to technical difficulties, I cannot render obstacles when the robot walks out of the initial walking frame. So the obstacles are all piled up in the starting trail of the training environment.
 
 ## References
 [^1]: Haarnoja, T., Zhou, A., Abbeel, P., & Levine, S. (2018). "Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor." *International Conference on Machine Learning (ICML)*. [arXiv:1801.01290](https://arxiv.org/abs/1801.01290)
